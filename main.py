@@ -1,9 +1,10 @@
-from fastapi import FastAPI, HTTPException, Depends
-from sqlmodel import SQLModel, Session, create_engine, select, Field
+from fastapi import FastAPI, HTTPException, Depends, Query, Request
+from sqlmodel import SQLModel, Session, create_engine, select, Field, func
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 from datetime import datetime, timezone
-from typing import List, Annotated, Generic, TypeVar
+from typing import List, Annotated, Generic, TypeVar, Optional
+from math import ceil
 
 
 class Campaign(SQLModel, table=True):
@@ -69,11 +70,49 @@ class Response(BaseModel, Generic[T]):
     data: T
 
 
-@app.get("/campaigns", response_model=Response[List[Campaign]])
-async def read_campaigns(session: SessionDep):
-    data = session.exec(select(Campaign)).all()
+class PaginatedResponse(BaseModel, Generic[T]):
+    data: T
+    next: Optional[str]
+    prev: Optional[str]
+    offset: int
+    limit: int
+    total_items: int
+    total_pages: int
 
-    return {"data": data}
+
+@app.get("/campaigns", response_model=PaginatedResponse[List[Campaign]])
+async def read_campaigns(
+    session: SessionDep,
+    request: Request,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1),
+):
+    data = session.exec(
+        select(Campaign).order_by(Campaign.campaign_id).offset(offset).limit(limit)  # type: ignore
+    ).all()
+
+    total_items = session.exec(select(func.count()).select_from(Campaign)).one()
+
+    total_pages = max(1, ceil(total_items / limit))
+
+    base_url = str(request.base_url)
+
+    next_url = f"{base_url}campaigns?offset={offset + limit}&limit={limit}"
+
+    if offset > 0:
+        prev_url = f"{base_url}campaigns?offset={max(0, offset - limit)}&limit={limit}"
+    else:
+        prev_url = None
+
+    return PaginatedResponse(
+        data=data,
+        next=next_url,
+        prev=prev_url,
+        offset=offset,
+        limit=limit,
+        total_items=total_items,
+        total_pages=total_pages,
+    )
 
 
 @app.get("/campaigns/{id}", response_model=Response[Campaign])
